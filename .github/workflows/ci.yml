@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: beeops
+          POSTGRES_USER: beeops
+          POSTGRES_PASSWORD: ci_password
+          # Cùng múi giờ với máy chủ thật: current_date quyết định ngày trong mã đơn,
+          # để UTC thì test múi giờ sẽ xanh ở CI nhưng đỏ ngoài production.
+          TZ: Asia/Ho_Chi_Minh
+          PGTZ: Asia/Ho_Chi_Minh
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U beeops -d beeops"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      TZ: Asia/Ho_Chi_Minh
+      DATABASE_URL: postgresql://beeops:ci_password@localhost:5432/beeops?schema=public
+      JWT_SECRET: ci-jwt-secret-0123456789-0123456789-abcdef
+      COOKIE_SECRET: ci-cookie-secret-0123456789-0123456789-abc
+      COOKIE_SECURE: 'false'
+      FRONTEND_ORIGIN: http://localhost:3000
+      SMTP_HOST: smtp.invalid
+      SMTP_PORT: '587'
+      SMTP_USER: ci
+      SMTP_PASS: ci
+      SMTP_FROM: BeeOps CI <ci@invalid>
+      UPLOAD_DIR: ./uploads
+      # Tắt cron trong CI: không cần và chỉ làm bẩn log.
+      MAIL_FLUSH_CRON: '0 0 31 2 *'
+      SLA_CHECK_CRON: '0 0 31 2 *'
+      QUOTE_EXPIRY_CRON: '0 0 31 2 *'
+      FILE_CLEANUP_CRON: '0 0 31 2 *'
+      PORT: '8087'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npx prisma generate
+
+      - name: Lint
+        run: npx eslint "src/**/*.ts"
+
+      - name: Kiểm tra kiểu
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Giới hạn 300 dòng mỗi file
+        run: |
+          OVER=$(find src -name '*.ts' -exec wc -l {} + | awk '$1>300 && $2!="total"')
+          if [ -n "$OVER" ]; then echo "Vượt 300 dòng:"; echo "$OVER"; exit 1; fi
+          echo "mọi file đều dưới 300 dòng"
+
+      - name: Unit test
+        run: npx jest --ci
+
+      - run: npm run build
+
+      - name: Nạp schema và danh mục
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          export PGPASSWORD=ci_password
+          psql -h localhost -U beeops -d beeops -v ON_ERROR_STOP=1 -q -f db/schema.sql
+          psql -h localhost -U beeops -d beeops -v ON_ERROR_STOP=1 -q -f db/schema-flow.sql
+          psql -h localhost -U beeops -d beeops -v ON_ERROR_STOP=1 -q -f db/seed.sql
+          psql -h localhost -U beeops -d beeops -v ON_ERROR_STOP=1 -q -f db/migrations/003-service-fields-seed.sql
+          psql -h localhost -U beeops -d beeops -tAc \
+            "SELECT current_setting('TimeZone')||' | '||order_code('E_FCL', '_', current_date, 1)"
+
+      - name: Khởi động API
+        run: |
+          node dist/main > /tmp/api.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -fsS http://127.0.0.1:8087/api/health >/dev/null 2>&1 && break
+          done
+          curl -fsS http://127.0.0.1:8087/api/health || { cat /tmp/api.log; exit 1; }
+
+      - name: Đổi mật khẩu admin (bộ test dùng mật khẩu này)
+        run: |
+          curl -fsS -X POST http://127.0.0.1:8087/api/auth/login \
+            -H 'Content-Type: application/json' -c /tmp/c.txt \
+            -d '{"email":"admin@beetransportation.vn","password":"BeeOps@2026"}' >/dev/null
+          curl -fsS -X POST http://127.0.0.1:8087/api/auth/change-password \
+            -H 'Content-Type: application/json' -b /tmp/c.txt \
+            -d '{"currentPassword":"BeeOps@2026","newPassword":"246810"}' >/dev/null
+
+      - name: Smoke test luồng nghiệp vụ F1–F5
+        run: PYTHONIOENCODING=utf-8 python3 scripts/e2e-smoke.py
+
+      - name: Smoke test dashboard F6
+        run: PYTHONIOENCODING=utf-8 python3 scripts/e2e-dashboard.py
+
+      - name: Smoke test bình luận / file / Excel / PDF / audit
+        run: PYTHONIOENCODING=utf-8 python3 scripts/e2e-collab.py
+
+      - name: Log API khi có lỗi
+        if: failure()
+        run: tail -100 /tmp/api.log
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t beeops-api:ci .

@@ -1,0 +1,51 @@
+# BeeOps — VM ĐÃ CÓ reverse proxy chạy sẵn trên host (Caddy/nginx của dự án khác).
+#
+# Khác docker-compose.prod.yml: KHÔNG có service proxy, vì cổng 80/443 đã có chủ.
+# API chỉ mở ra 127.0.0.1 — proxy trên host trỏ vào đó.
+#
+#   docker compose -f docker-compose.vm.yml up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: beeops-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-beeops}
+      POSTGRES_USER: ${POSTGRES_USER:-beeops}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD chưa đặt trong .env}
+      # BẮT BUỘC. current_date quyết định ngày trong mã đơn; để UTC thì đơn
+      # tạo 00:00-07:00 giờ VN sẽ mang mã của hôm trước.
+      TZ: Asia/Ho_Chi_Minh
+      PGTZ: Asia/Ho_Chi_Minh
+    # Không publish cổng. Máy này đã có postgres của dự án khác — đụng cổng
+    # 5432 là gãy dịch vụ đang chạy.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-beeops} -d ${POSTGRES_DB:-beeops}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: .
+    image: beeops-api:latest
+    container_name: beeops-api
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 8087
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      # CHỈ loopback. Không để 0.0.0.0 — API sẽ lộ thẳng ra Internet,
+      # bỏ qua HTTPS và mọi header bảo mật của proxy.
+      - '127.0.0.1:8087:8087'
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+
+volumes:
+  pgdata:

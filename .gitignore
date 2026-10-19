@@ -1,0 +1,28 @@
+node_modules/
+dist/
+uploads/
+.env
+*.log
+
+# build & runtime
+*.tsbuildinfo
+.turbo/
+coverage/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# secrets — chỉ commit .env.example
+.env.*
+!.env.example
+
+# sinh ra lúc triển khai
+.release
+.staging/
+
+# Bytecode Python của bộ test — không phải mã nguồn
+__pycache__/
+*.pyc

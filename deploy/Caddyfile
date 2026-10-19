@@ -1,0 +1,48 @@
+# Caddy tự xin và gia hạn chứng chỉ Let's Encrypt cho hostname này.
+# DNS phải trỏ về IP VM TRƯỚC khi khởi động, nếu không việc xin chứng chỉ
+# thất bại rồi vào backoff — xem §4 của DEPLOY.md.
+bee-trans-api.ketnoivantai.com {
+	# KHÔNG nén text/event-stream: nén là gom buffer, mà gom buffer thì luồng
+	# thông báo tức thì đứng im cho tới khi đầy khối.
+	@compressible not header Content-Type text/event-stream*
+	encode @compressible zstd gzip
+
+	# API
+	handle /api/* {
+		reverse_proxy api:8087
+	}
+
+	# Frontend — bỏ comment khi đã bật service web trong compose.
+	# handle {
+	# 	reverse_proxy web:80
+	# }
+	handle {
+		respond "BeeOps API đang chạy. Frontend chưa được triển khai." 200
+	}
+
+	# Chặn tải file đính kèm bằng đường tĩnh — mọi file phải đi qua
+	# GET /api/files/:orderId/:fileId để được kiểm tra quyền.
+	@uploads path /uploads/*
+	respond @uploads 404
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+	}
+}
+
+# Chạy thử bằng IP trước khi có tên miền: đổi khối trên thành
+#   :80 {
+#     handle /api/* { reverse_proxy api:8087 }
+#   }
+# rồi truy cập http://<IP-VM>/api/health

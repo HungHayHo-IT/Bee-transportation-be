@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: beeops-postgres
+    environment:
+      POSTGRES_DB: beeops
+      POSTGRES_USER: beeops
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-beeops_dev_pw}
+      # Múi giờ BẮT BUỘC — current_date quyết định ngày trong mã đơn.
+      # Để UTC thì đơn tạo 00:00-07:00 giờ VN mang mã của ngày hôm trước.
+      TZ: Asia/Ho_Chi_Minh
+      PGTZ: Asia/Ho_Chi_Minh
+    ports:
+      - '127.0.0.1:5442:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U beeops -d beeops']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:

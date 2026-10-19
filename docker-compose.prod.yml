@@ -1,0 +1,64 @@
+# BeeOps — triển khai một VM. Dùng cùng .env với API.
+#   docker compose -f docker-compose.prod.yml up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: beeops-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-beeops}
+      POSTGRES_USER: ${POSTGRES_USER:-beeops}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD chưa đặt trong .env}
+      # BẮT BUỘC. current_date quyết định ngày trong mã đơn; để UTC thì đơn
+      # tạo 00:00-07:00 giờ VN sẽ mang mã của hôm trước.
+      TZ: Asia/Ho_Chi_Minh
+      PGTZ: Asia/Ho_Chi_Minh
+    # KHÔNG publish cổng ra ngoài. API nối qua mạng nội bộ của compose.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-beeops} -d ${POSTGRES_DB:-beeops}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: .
+    image: beeops-api:latest
+    container_name: beeops-api
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 8087
+      TZ: Asia/Ho_Chi_Minh
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # File đính kèm nằm NGOÀI image — không mất khi build lại.
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2-alpine
+    container_name: beeops-proxy
+    depends_on: [api]
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  # Frontend — bật khi đã có image. Caddyfile đã trỏ sẵn tới service này.
+  # web:
+  #   image: beeops-web:latest
+  #   container_name: beeops-web
+  #   restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

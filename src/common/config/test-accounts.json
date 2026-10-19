@@ -1,0 +1,55 @@
+{
+  "_doc": [
+    "TÀI KHOẢN TEST — dùng chung cho mọi team (BE, FE, QA).",
+    "",
+    "Đây là NGUỒN SỰ THẬT DUY NHẤT: file SQL seed và đoạn code chặn đổi mật khẩu",
+    "đều đọc từ đây, nên danh sách không thể lệch nhau.",
+    "",
+    "CHỈ dùng cho môi trường thử nghiệm. Mật khẩu nằm vĩnh viễn trong lịch sử git",
+    "nên tuyệt đối không tái sử dụng bộ này ở bất kỳ đâu khác.",
+    "",
+    "Các tài khoản này KHÔNG đổi được mật khẩu: POST /auth/change-password trả 403.",
+    "Lý do: mọi team dùng chung, một người đổi là những người còn lại mất lối vào.",
+    "Vì thế seed đặt must_change_password = false — nếu để true thì guard toàn cục",
+    "sẽ chặn mọi endpoint cho tới khi đổi mật khẩu, mà đổi thì lại bị chặn: tài",
+    "khoản chết cứng."
+  ],
+  "password": "246810",
+  "accounts": [
+    {
+      "email": "test.admin@beeops.test",
+      "fullName": "Test Admin",
+      "role": "admin",
+      "department": null,
+      "note": "Toàn quyền. Xem được doanh thu toàn công ty."
+    },
+    {
+      "email": "test.leader@beeops.test",
+      "fullName": "Test Leader",
+      "role": "leader",
+      "department": null,
+      "note": "Ban lãnh đạo: xem toàn công ty, không sửa cấu hình."
+    },
+    {
+      "email": "test.manager@beeops.test",
+      "fullName": "Test Manager",
+      "role": "manager",
+      "department": "Phòng Vận chuyển nội địa miền Bắc",
+      "note": "Trưởng phòng. Chỉ thấy đơn của phòng mình."
+    },
+    {
+      "email": "test.sale@beeops.test",
+      "fullName": "Test Sale",
+      "role": "sale",
+      "department": null,
+      "note": "Tạo đơn, chọn báo giá, chốt đơn. Chỉ thấy đơn mình tạo."
+    },
+    {
+      "email": "test.staff@beeops.test",
+      "fullName": "Test Staff",
+      "role": "staff",
+      "department": "Phòng Vận chuyển nội địa miền Bắc",
+      "note": "Nhân viên phòng: báo giá, cập nhật mốc tiến độ."
+    }
+  ]
+}

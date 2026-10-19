@@ -1,0 +1,80 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Chỉ deploy khi CI đã xanh. workflow_dispatch bỏ qua điều kiện này.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Lấy đúng commit đã qua CI, không phải HEAD mới nhất.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Đóng gói mã nguồn
+        run: |
+          set -euo pipefail
+          git rev-parse --short HEAD > .release
+          echo " ($(git log -1 --format='%s' | head -c 60))" >> .release
+          tr -d '\n' < .release > .release.tmp && mv .release.tmp .release
+          # Gửi cây làm việc, KHÔNG gửi .git — máy chủ không cần lịch sử.
+          tar czf /tmp/release.tar.gz \
+            --exclude='./.git' --exclude='./node_modules' --exclude='./dist' \
+            --exclude='./uploads' --exclude='./.env' .
+          ls -lh /tmp/release.tar.gz
+
+      - name: Nạp khóa SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          set -euo pipefail
+          # tr -d CR: khóa copy từ terminal Windows hay dính \r, ssh từ chối ngay
+          # và lỗi lòi ra thành "Permission denied (publickey)" rất khó đoán.
+          printf '%s\n' "${{ secrets.VM_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keygen -y -f ~/.ssh/id_deploy > /dev/null \
+            || { echo 'VM_SSH_KEY không phải khóa riêng hợp lệ'; exit 1; }
+          echo "vân tay khóa CI: $(ssh-keygen -lf ~/.ssh/id_deploy)"
+          ssh-keyscan -p "${{ secrets.VM_PORT || 22 }}" -H "${{ secrets.VM_HOST }}" \
+            >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Triển khai
+        run: |
+          # pipefail BẮT BUỘC: mã thoát của pipeline mặc định là của `tee`,
+          # nên ssh hỏng mà job vẫn xanh — deploy thất bại trong im lặng.
+          set -o pipefail
+          ssh -i ~/.ssh/id_deploy \
+              -p "${{ secrets.VM_PORT || 22 }}" \
+              -o BatchMode=yes -o ConnectTimeout=15 \
+              "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+              < /tmp/release.tar.gz 2>&1 | tee /tmp/deploy.log
+          # Forced command trong authorized_keys quyết định lệnh chạy — key này
+          # không gọi được gì khác trên máy chủ.
+
+      - name: Xóa khóa
+        if: always()
+        run: rm -f ~/.ssh/id_deploy
+
+      - name: Tóm tắt
+        if: always()
+        run: |
+          {
+            echo "### Kết quả triển khai"
+            echo '```'
+            tail -25 /tmp/deploy.log 2>/dev/null || echo "(không có log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

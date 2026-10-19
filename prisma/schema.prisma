@@ -1,0 +1,955 @@
+// BeeOps — ánh xạ từ db/schema.sql (nguồn sự thật là SQL, file này chỉ là view của nó).
+// Sau khi đổi schema.sql:  npx prisma db pull  rồi đối chiếu lại tên camelCase ở đây.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Department {
+  id         Int      @id @default(autoincrement())
+  name       String   @unique
+  managerId  Int?     @map("manager_id")
+  parentId   Int?     @map("parent_id")
+  serviceIds Int[]    @default([]) @map("service_ids")
+  isActive   Boolean  @default(true) @map("is_active")
+  /// Phong kinh doanh (076): Sale tao don moi dich vu, phong KHONG tham gia bao gia.
+  /// CHECK o DB: phong sale luon co serviceIds rong.
+  isSales    Boolean  @default(false) @map("is_sales")
+  /// Phong bao gia (079): duy nhat phong nhan don va bao gia.
+  isQuoting  Boolean  @default(false) @map("is_quoting")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  manager    User?             @relation("DeptManager", fields: [managerId], references: [id], map: "departments_manager_fk")
+  parent     Department?       @relation("DeptTree", fields: [parentId], references: [id], onDelete: SetNull, map: "departments_parent_fk")
+  children   Department[]      @relation("DeptTree")
+  members    User[]            @relation("UserDepartment")
+  orders     Order[]
+  orderDepts OrderDepartment[]
+  comments   Comment[]
+
+  @@index([serviceIds], map: "departments_services_idx", type: Gin)
+  @@index([parentId], map: "departments_parent_idx")
+  @@map("departments")
+}
+
+model User {
+  id                      Int      @id @default(autoincrement())
+  email                   String   @unique @db.Citext
+  fullName                String   @map("full_name")
+  phone                   String?
+  passwordHash            String   @map("password_hash")
+  departmentId            Int?     @map("department_id")
+  roles                   String[] @default([])
+  canViewCompanyReport    Boolean  @default(false) @map("can_view_company_report")
+  /// Co "Xem toan bo don (chi xem)" (072). Chi mo duong DOC — xem ScopeService.orderReadWhere.
+  canViewAllOrders        Boolean  @default(false) @map("can_view_all_orders")
+  emailOff                String[] @default([]) @map("email_off")
+  /// Loại thông báo nhân viên đã tắt PUSH. Tách khỏi emailOff là cố ý: tắt push
+  /// không được kéo theo mất bản email của cùng sự kiện. Rỗng = nhận tất cả.
+  pushOff                 String[] @default([]) @map("push_off")
+  mustChangePassword      Boolean  @default(true) @map("must_change_password")
+  isActive                Boolean  @default(true) @map("is_active")
+  isLandingRepresentative Boolean  @default(false) @map("is_landing_representative")
+
+  /// Mô tả ngắn hiện dưới tên trên landing. NULL = chưa viết.
+
+  landingDescription String? @map("landing_description")
+
+  /// URL anh dai dien hien tren landing. NULL = chua co anh.
+
+  landingAvatarUrl String?  @map("landing_avatar_url")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  department             Department?          @relation("UserDepartment", fields: [departmentId], references: [id])
+  managerOf              Department[]         @relation("DeptManager")
+  ordersCreated          Order[]
+  customersCreated       Customer[]           @relation("CustomerCreatedBy")
+  termsClauses           TermsClause[]
+  customersReviewed      Customer[]           @relation("CustomerReviewedBy")
+  locationsCreated       Location[]
+  priceSessionsCreated   PriceSession[]       @relation("PriceSessionCreatedBy")
+  priceSessionsActivated PriceSession[]       @relation("PriceSessionActivatedBy")
+  assignedTo             OrderDepartment[]
+  milestonesDone         OrderMilestone[]
+  comments               Comment[]
+  notifications          Notification[]
+  activities             ActivityLog[]
+  quoteRequestsSubmitted QuoteRequest[]       @relation("QuoteRequestCreator")
+  quoteRequestsReviewed  QuoteRequest[]       @relation("QuoteRequestReviewer")
+  refreshTokens          RefreshToken[]
+  newsArticles           NewsArticle[]
+  landingEdits           LandingContent[]     @relation("LandingContentEditor")
+  permissionEdits        RolePagePermission[] @relation("RolePagePermissionEditor")
+  devices                UserDevice[]
+  signatureRequests      OrderSignature[]
+  settingEdits           AppSetting[]         @relation("AppSettingEditor")
+  regionRoutesCreated    RegionRoute[]
+  priceRegionsManaged    PriceRegion[]        @relation("PriceRegionManager")
+
+  @@map("users")
+}
+
+model Service {
+  id                     Int      @id @default(autoincrement())
+  code                   String   @unique
+  name                   String
+  slaHours               Int      @default(24) @map("sla_hours")
+  milestones             String[] @default([])
+  // Ô "Thông số hàng hóa" chung mà dịch vụ này thực sự dùng — tên trường tầng API
+  // (weightKg, volumeCbm, ...), không phải tên cột. Bảy cột số của orders vẫn là cột
+  // thật vì đơn giá tham khảo và dashboard khớp trên chúng.
+  cargoFields            String[] @default(["weightKg", "volumeCbm", "packageCount", "containerType", "dimLM", "dimWM", "dimHM"]) @map("cargo_fields")
+  sortOrder              Int      @default(0) @map("sort_order")
+  /// false = diem den ngoai nuoc, khong hoi tinh/thanh diem den (vd CBT)
+  hasDomesticOrigin      Boolean  @default(true) @map("has_domestic_origin")
+  hasDomesticDestination Boolean  @default(true) @map("has_domestic_destination")
+  isActive               Boolean  @default(true) @map("is_active")
+
+  /// Dich vu tu them, hien tren landing (migration 031). landingKey la khoa on
+  /// dinh landing dung de tra chu nghia trong lop phu CMS. NULL = khong do
+  /// landing quan.
+  landingKey    String? @unique(map: "services_landing_key_uk") @map("landing_key")
+  landingSlugVi String? @unique(map: "services_landing_slug_vi_uk") @map("landing_slug_vi")
+  landingSlugEn String? @unique(map: "services_landing_slug_en_uk") @map("landing_slug_en")
+  showOnLanding Boolean @default(false) @map("show_on_landing")
+
+  children      ServiceChild[]
+  orders        Order[]
+  fields        ServiceField[]
+  quoteRequests QuoteRequest[]
+
+  @@map("services")
+}
+
+/// Yêu cầu báo giá từ form công khai. Admin/Sale duyệt → chuyển thành Order.
+model QuoteRequest {
+  id                  Int       @id @default(autoincrement())
+  customerName        String    @map("customer_name")
+  phone               String
+  email               String?
+  serviceId           Int?      @map("service_id")
+  originProvince      String?   @map("origin_province")
+  destinationProvince String?   @map("destination_province")
+  note                String?
+  status              String    @default("pending")
+  createdBy           Int?      @map("created_by")
+  customerId          Int?      @map("customer_id")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  reviewedBy          Int?      @map("reviewed_by")
+  reviewedAt          DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  convertedToOrderId  Int?      @map("converted_to_order_id")
+  rejectReason        String?   @map("reject_reason")
+  /// Token FCM của máy khách VÃNG LAI (không đăng nhập). Khách có tài khoản thì
+  /// token nằm ở CustomerDevice. Không tạo tài khoản tạm: CustomerAccount.email
+  /// là UNIQUE NOT NULL nhưng form báo giá cho phép bỏ trống email.
+  fcmToken            String?   @map("fcm_token")
+
+  service       Service?         @relation(fields: [serviceId], references: [id])
+  creator       User?            @relation("QuoteRequestCreator", fields: [createdBy], references: [id])
+  reviewer      User?            @relation("QuoteRequestReviewer", fields: [reviewedBy], references: [id])
+  order         Order?           @relation(fields: [convertedToOrderId], references: [id])
+  customer      CustomerAccount? @relation(fields: [customerId], references: [id])
+  notifications Notification[]
+
+  @@index([status, createdAt(sort: Desc)], map: "quote_requests_status_idx")
+  @@map("quote_requests")
+}
+
+/// Một dòng = một ô nhập riêng của dịch vụ trên form tạo đơn (F1).
+/// Admin tự thêm/sửa trong danh mục, không cần dev.
+model ServiceField {
+  id             Int      @id @default(autoincrement())
+  serviceId      Int      @map("service_id")
+  /// O rieng cua MOT dich vu con (054). NULL = ap dung cho ca dich vu.
+  serviceChildId Int?     @map("service_child_id")
+  /// Khóa trong Order.serviceData. Không đổi sau khi đã có đơn dùng.
+  fieldKey       String   @map("field_key")
+  label          String
+  fieldType      String   @map("field_type")
+  unit           String?
+  /// Chỉ dùng cho fieldType='select'.
+  options        String[] @default([])
+  isRequired     Boolean  @default(false) @map("is_required")
+  sortOrder      Int      @default(0) @map("sort_order")
+  helpText       String?  @map("help_text")
+  /// Ngừng dùng thay cho xóa: đơn cũ vẫn hiển thị được nhãn của trường.
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  service Service       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  child   ServiceChild? @relation(fields: [serviceChildId], references: [id], onDelete: Cascade)
+
+  /// Khoa chong trung la CHI MUC MOT PHAN o CSDL (mot cho tang chung, mot cho
+  /// tang dich vu con) nen Prisma khong khai duoc bang @@unique. Cho goi dung
+  /// findFirst chu khong findUnique.
+  @@index([serviceId, sortOrder], map: "service_fields_service_idx")
+  @@map("service_fields")
+}
+
+model Customer {
+  id Int @id @default(autoincrement())
+
+  /// Ma khach ben he thong cu (CL000001..) — xem db/migrations/044.
+  /// De trong voi khach cu va khach tu form website: ho khong co ma.
+  code String? @unique
+
+  companyName String? @map("company_name")
+  contactName String? @map("contact_name")
+  phone       String?
+  email       String?
+  note        String?
+
+  /// pending | approved | rejected — xem db/migrations/026.
+  /// Chi ho so 'approved' moi duoc chon khi tao don.
+  status          String  @default("approved")
+  /// Khong bat buoc: khach le va khach tu form website khong co.
+  taxCode         String? @map("tax_code")
+  businessLicence String? @map("business_licence")
+
+  createdById  Int?      @map("created_by")
+  reviewedById Int?      @map("reviewed_by")
+  reviewedAt   DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectReason String?   @map("reject_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  orders     Order[]
+  addresses  CustomerAddress[]
+  createdBy  User?   @relation("CustomerCreatedBy", fields: [createdById], references: [id])
+  reviewedBy User?   @relation("CustomerReviewedBy", fields: [reviewedById], references: [id])
+
+  @@index([createdAt(sort: Desc)], map: "customers_pending_idx")
+  @@map("customers")
+}
+
+/// Dich vu CON (migration 040) — mot lua chon hep hon trong mot dich vu lon,
+/// mang ma phuong thuc van chuyen cua OF1-TMS. Bang RIENG chu khong phai
+/// parent_id tren Service: moi truy van dang doc Service (form bao gia, landing,
+/// dinh tuyen phong ban) se nhin thay ca dich vu con neu dung chung bang.
+model ServiceChild {
+  id                     Int      @id @default(autoincrement())
+  serviceId              Int      @map("service_id")
+  name                   String
+  /// Ma mode cua OF1-TMS. NULL = chua gan ma — don cua dich vu con nay KHONG
+  /// du dieu kien day sang TMS.
+  tmsMode                String?  @map("tms_mode")
+  /// Hai dau cua tuyen co nam trong nuoc khong (054). NULL = THEO DICH VU CHA.
+  /// EXPORT_* di trong nuoc den nuoc ngoai; IMPORT_* nguoc lai; CBT_* nhu
+  /// EXPORT; DOMESTIC_* va PORTTRANSFER_* ca hai trong nuoc.
+  hasDomesticOrigin      Boolean? @map("has_domestic_origin")
+  hasDomesticDestination Boolean? @map("has_domestic_destination")
+  sortOrder              Int      @default(0) @map("sort_order")
+  isActive               Boolean  @default(true) @map("is_active")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  service     Service            @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  orders      Order[]
+  fields      ServiceField[]
+
+  @@index([serviceId, sortOrder], map: "service_children_cha_idx")
+  @@map("service_children")
+}
+
+model Order {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique
+  /// Tien to cua ma don: E_FCL (ma TMS viet tat) hoac BRK (ma dich vu cha).
+  /// So thu tu trong ngay dem theo cot nay.
+  codePrefix     String   @map("code_prefix")
+  orderDay       DateTime @default(dbgenerated("CURRENT_DATE")) @map("order_day") @db.Date
+  dailyNo        Int      @map("daily_no")
+  serviceId      Int      @map("service_id")
+  /// Dich vu con da chon. NULL = don cu, hoac dich vu cha khong co con nao.
+  serviceChildId Int?     @map("service_child_id")
+  customerId     Int?     @map("customer_id")
+  /// Sale phu trach don. NULL = don khach tu gui tu landing, chua Sale nao nhan (075).
+  createdBy      Int?     @map("created_by")
+  /// awaiting_info | new | distributed | quoting | awaiting_selection |
+  /// awaiting_customer | closed | in_progress | completed | rejected | cancelled
+  status         String   @default("new")
+
+  originProvince      String?   @map("origin_province")
+  originAddress       String?   @map("origin_address")
+  destinationProvince String?   @map("destination_province")
+  destinationAddress  String?   @map("destination_address")
+  desiredDate         DateTime? @map("desired_date") @db.Date
+
+  weightKg      Decimal? @map("weight_kg") @db.Decimal(12, 2)
+  volumeCbm     Decimal? @map("volume_cbm") @db.Decimal(12, 2)
+  packageCount  Int?     @map("package_count")
+  /// Don vi tinh cua `packageCount` khi day sang OF1-TMS (069). Danh muc 171
+  /// ma nam trong ma nguon. NULL = chua khai, lop ung dung roi ve 'PK'.
+  quantityUnit  String?  @map("quantity_unit") @db.VarChar(20)
+  containerType String?  @map("container_type")
+  dimLM         Decimal? @map("dim_l_m") @db.Decimal(8, 2)
+  dimWM         Decimal? @map("dim_w_m") @db.Decimal(8, 2)
+  dimHM         Decimal? @map("dim_h_m") @db.Decimal(8, 2)
+
+  goodsName   String? @map("goods_name")
+  note        String?
+  source      String?
+  files       Json    @default("[]")
+  /// Giá trị các trường RIÊNG theo dịch vụ — khóa lấy từ ServiceField.fieldKey.
+  serviceData Json    @default("{}") @map("service_data")
+
+  /// Địa điểm đầu tuyến — để tra giá niêm yết. NULL = đơn chưa khai (đơn cũ,
+  /// đơn từ form công khai, hoặc giao tận nơi chứ không đi giữa hai kho).
+  originLocationId      Int? @map("origin_location_id")
+  destinationLocationId Int? @map("destination_location_id")
+
+  departmentId Int?      @map("department_id")
+  finalAmount  Decimal?  @map("final_amount") @db.Decimal(15, 0)
+  /// Gia Sale chot voi khach (moi don da chon phong thang). NULL = chua nhap (078).
+  salePrice    Decimal?  @map("sale_price") @db.Decimal(15, 0)
+  closedAt     DateTime? @map("closed_at") @db.Timestamptz(6)
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz(6)
+  rejectReason String?   @map("reject_reason")
+  // Ba cột ghi chú RIÊNG cho ba nghiệp vụ — gộp một cột thì client phải đoán ý
+  // nghĩa theo status, và báo cáo không tách được.
+  closeNote    String?   @map("close_note")
+  rejectNote   String?   @map("reject_note")
+  cancelReason String?   @map("cancel_reason")
+  /// Day don sang OF1-TMS — xem db/migrations/045.
+  /// NULL = chua day. dang_gui | nhan | tu_choi | khong_ro.
+  /// Cot nay vua la trang thai vua la o khoa chiem cho: OF1 khong chan trung
+  /// fileNo nen gui hai lan la khach co hai don ben do.
+  tmsStatus    String?   @map("tms_status")
+  tmsPushedAt  DateTime? @map("tms_pushed_at") @db.Timestamptz(6)
+  tmsError     String?   @map("tms_error")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  service             Service           @relation(fields: [serviceId], references: [id])
+  serviceChild        ServiceChild?     @relation(fields: [serviceChildId], references: [id])
+  customer            Customer?         @relation(fields: [customerId], references: [id])
+  creator             User?             @relation(fields: [createdBy], references: [id])
+  department          Department?       @relation(fields: [departmentId], references: [id])
+  originLocation      Location?         @relation("OrderOrigin", fields: [originLocationId], references: [id])
+  destinationLocation Location?         @relation("OrderDestination", fields: [destinationLocationId], references: [id])
+  departments         OrderDepartment[]
+  milestones          OrderMilestone[]
+  comments            Comment[]
+  notifications       Notification[]
+  activities          ActivityLog[]
+  quoteRequests       QuoteRequest[]
+  signatures          OrderSignature[]
+
+  @@unique([serviceId, orderDay, dailyNo], map: "orders_daily_no_uk")
+  @@index([customerId], map: "orders_customer_idx")
+  @@index([departmentId, closedAt(sort: Desc)], map: "orders_dept_idx")
+  @@index([originProvince, destinationProvince], map: "orders_route_idx")
+  @@index([createdBy, createdAt(sort: Desc)], map: "orders_sale_idx")
+  @@index([serviceId, closedAt(sort: Desc)], map: "orders_service_idx")
+  @@index([status])
+  @@map("orders")
+}
+
+/// Yeu cau khach ky xac nhan don. Moi lan gui la mot dong, ke ca khi khach
+/// chua ky. `pdfSha256` la ma bam cua CHINH file da chot — khong co no thi
+/// khong chung minh duoc "ban khach ky chinh la ban dang luu".
+model OrderSignature {
+  id      Int @id @default(autoincrement())
+  orderId Int @map("order_id")
+
+  /// dien_tu | chu_ky_so — cho san cho chu ky so co chung thu sau nay.
+  loai      String @default("dien_tu")
+  /// cho_ky | da_ky | tu_choi | het_han
+  trangThai String @default("cho_ky") @map("trang_thai")
+
+  /// Ma mot lan, luu dang bam. Khong luu ma goc: ai doc duoc DB cung khong ky
+  /// thay khach duoc.
+  tokenHash String   @unique @map("token_hash")
+  hetHanLuc DateTime @map("het_han_luc") @db.Timestamptz(6)
+
+  pdfKey    String  @map("pdf_key")
+  pdfSha256 String  @map("pdf_sha256")
+  pdfKyKey  String? @map("pdf_ky_key")
+  anhKyKey  String? @map("anh_ky_key")
+
+  /// Toan van dieu khoan tai thoi diem ky. Doi dieu khoan hom nay khong lam sai
+  /// nhung chu ky da thu hom qua.
+  dieuKhoan String @map("dieu_khoan")
+
+  kyLuc             DateTime? @map("ky_luc") @db.Timestamptz(6)
+  kyIp              String?   @map("ky_ip")
+  kyUserAgent       String?   @map("ky_user_agent")
+  kyTen             String?   @map("ky_ten")
+  otpEmail          String?   @map("otp_email")
+  otpDungLuc        DateTime? @map("otp_dung_luc") @db.Timestamptz(6)
+  customerAccountId Int?      @map("customer_account_id")
+
+  lyDoTuChoi String? @map("ly_do_tu_choi")
+
+  createdBy Int      @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  order           Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  creator         User             @relation(fields: [createdBy], references: [id])
+  customerAccount CustomerAccount? @relation(fields: [customerAccountId], references: [id])
+
+  @@index([orderId, trangThai], map: "order_signatures_order_idx")
+  @@map("order_signatures")
+}
+
+model OrderDepartment {
+  orderId      Int     @map("order_id")
+  departmentId Int     @map("department_id")
+  state        String  @default("pending")
+  assigneeId   Int?    @map("assignee_id")
+  passReason   String? @map("pass_reason")
+  isManual     Boolean @default(false) @map("is_manual")
+
+  amount       Decimal?  @db.Decimal(15, 0)
+  scopeNote    String?   @map("scope_note")
+  leadTime     String?   @map("lead_time")
+  validUntil   DateTime? @map("valid_until") @db.Date
+  quoteVersion Int       @default(0) @map("quote_version")
+  quoteHistory Json      @default("[]") @map("quote_history")
+
+  distributedAt DateTime  @default(now()) @map("distributed_at") @db.Timestamptz(6)
+  claimedAt     DateTime? @map("claimed_at") @db.Timestamptz(6)
+  firstQuotedAt DateTime? @map("first_quoted_at") @db.Timestamptz(6)
+  lastQuotedAt  DateTime? @map("last_quoted_at") @db.Timestamptz(6)
+
+  order      Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id])
+  assignee   User?      @relation(fields: [assigneeId], references: [id])
+
+  @@id([orderId, departmentId])
+  @@index([departmentId, state], map: "order_departments_queue_idx")
+  @@map("order_departments")
+}
+
+model OrderMilestone {
+  id      Int       @id @default(autoincrement())
+  orderId Int       @map("order_id")
+  seq     Int
+  name    String
+  status  String    @default("pending")
+  note    String?
+  files   Json      @default("[]")
+  doneBy  Int?      @map("done_by")
+  doneAt  DateTime? @map("done_at") @db.Timestamptz(6)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [doneBy], references: [id])
+
+  @@unique([orderId, seq])
+  @@map("order_milestones")
+}
+
+model Comment {
+  id           Int      @id @default(autoincrement())
+  orderId      Int      @map("order_id")
+  departmentId Int?     @map("department_id")
+  userId       Int      @map("user_id")
+  kind         String   @default("comment")
+  body         String
+  mentions     Int[]    @default([])
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  department Department? @relation(fields: [departmentId], references: [id])
+  user       User        @relation(fields: [userId], references: [id])
+
+  @@index([orderId, createdAt], map: "comments_order_idx")
+  @@map("comments")
+}
+
+/// Chủ sở hữu: DÙNG MỘT trong userId / customerId, hoặc cả hai NULL khi là
+/// khách vãng lai (lúc đó quoteRequestId giữ vai trò neo). Hai cột riêng chứ
+/// KHÔNG phải một cột + cờ isCustomer — xem migration 015 để biết lý do
+/// (users.id và customerAccounts.id là hai sequence độc lập trùng nhau dày đặc).
+model Notification {
+  id             Int       @id @default(autoincrement())
+  userId         Int?      @map("user_id")
+  customerId     Int?      @map("customer_id")
+  quoteRequestId Int?      @map("quote_request_id")
+  orderId        Int?      @map("order_id")
+  type           String
+  title          String
+  body           String?
+  isRead         Boolean   @default(false) @map("is_read")
+  emailedAt      DateTime? @map("emailed_at") @db.Timestamptz(6)
+  pushedAt       DateTime? @map("pushed_at") @db.Timestamptz(6)
+  dedupeKey      String?   @map("dedupe_key")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user         User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  customer     CustomerAccount? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  quoteRequest QuoteRequest?    @relation(fields: [quoteRequestId], references: [id], onDelete: Cascade)
+  order        Order?           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt(sort: Desc)], map: "notifications_inbox_idx")
+  @@index([customerId, isRead, createdAt(sort: Desc)], map: "notifications_cust_inbox_idx")
+  @@map("notifications")
+}
+
+model ActivityLog {
+  id        Int      @id @default(autoincrement())
+  orderId   Int?     @map("order_id")
+  entity    String
+  entityId  String   @map("entity_id")
+  action    String
+  actorId   Int?     @map("actor_id")
+  detail    Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor User?  @relation(fields: [actorId], references: [id])
+
+  @@index([entity, entityId, createdAt(sort: Desc)], map: "activity_entity_idx")
+  @@index([orderId, createdAt(sort: Desc)], map: "activity_order_idx")
+  @@map("activity_log")
+}
+
+/// Bài tin tức, quản CRUD ở admin, phần đã published đẩy sang landing.
+/// Lop phu noi dung landing. Mot dong = mot o da bi CMS ghi de; khong co dong
+/// nghia la landing dung gia tri mac dinh bien dich san trong code.
+model LandingContent {
+  id        Int      @id @default(autoincrement())
+  locale    String
+  keyPath   String   @map("key_path")
+  value     String
+  updatedBy Int?     @map("updated_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  editor User? @relation("LandingContentEditor", fields: [updatedBy], references: [id])
+
+  @@unique([locale, keyPath], map: "landing_content_unique")
+  @@map("landing_content")
+}
+
+model NewsArticle {
+  id            Int       @id @default(autoincrement())
+  slug          String    @unique
+  title         String
+  excerpt       String?
+  body          String    @default("")
+  coverImageUrl String?   @map("cover_image_url")
+  status        String    @default("draft")
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  createdBy     Int?      @map("created_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  creator User? @relation(fields: [createdBy], references: [id])
+
+  @@index([status, updatedAt(sort: Desc)], map: "news_articles_status_idx")
+  @@map("news_articles")
+}
+
+/// Tài khoản khách hàng — tách khỏi User (nhân viên nội bộ). Đăng nhập bằng
+/// Email+PIN hoặc Google/Apple.
+/// Dia chi lay/giao cua mot khach (070) - nguon cho `addresses[]` cua OF1.
+model CustomerAddress {
+  id         Int      @id @default(autoincrement())
+  customerId Int      @map("customer_id")
+  /// Chi duy nhat TRONG PHAM VI mot khach, dung nhu contract OF1 muc 3.
+  code       String   @db.VarChar(50)
+  address    String
+  contact    String?
+  /// PICKUP (chi lay) / DELIVERY (chi giao) / BOTH (mac dinh).
+  type       String   @default("BOTH") @db.VarChar(10)
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, code], map: "customer_addresses_code_uk")
+  /// Chong trung dia chi: chi so dua tren cot SINH `addr_key` cua CSDL, khong
+  /// khai o day vi Prisma se doi ghi vao mot cot GENERATED ALWAYS.
+  @@map("customer_addresses")
+}
+
+model CustomerAccount {
+  id              Int       @id @default(autoincrement())
+  email           String    @unique @db.Citext
+  phone           String?
+  fullName        String    @default("") @map("full_name")
+  pinHash         String?   @map("pin_hash")
+  /// URL cong khai anh dai dien tren S3. NULL = chua dat, app ve chu cai dau cua
+  /// ten. Server tu dung URL tu key da ky, khong nhan URL tuy y tu client.
+  avatarUrl       String?   @map("avatar_url")
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(6)
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Danh sách loại thông báo khách đã tắt push (vd: 'quote_received'). Rỗng =
+  /// nhận tất cả.
+  pushOff         String[]  @default([]) @map("push_off")
+
+  identities    CustomerIdentity[]
+  quoteRequests QuoteRequest[]
+  devices       CustomerDevice[]
+  notifications Notification[]
+  refreshTokens CustomerRefreshToken[]
+  signatures    OrderSignature[]
+
+  @@map("customer_accounts")
+}
+
+/// Thiết bị nhận push của khách. UNIQUE trên fcmToken một mình là cố ý: một
+/// token = một bản cài app trên một máy, nên đổi chủ máy thì phải đổi chủ token
+/// chứ không sinh dòng thứ hai. Xem db/migrations/014-customer-devices.sql.
+model CustomerDevice {
+  id         Int      @id @default(autoincrement())
+  customerId Int      @map("customer_id")
+  fcmToken   String   @unique(map: "customer_devices_token_uk") @map("fcm_token")
+  platform   String
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer CustomerAccount @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId], map: "customer_devices_cust_idx")
+  @@map("customer_devices")
+}
+
+/// Thiết bị nhận push của NHÂN VIÊN. Bảng riêng chứ không thêm userId nullable
+/// vào CustomerDevice: hai cột FK nullable trên cùng bảng buộc mọi truy vấn phải
+/// tự nhớ lọc thêm vế "cột kia IS NULL" — đúng cái bẫy đã phải vá ở migration
+/// 016. Xem db/migrations/019-user-devices-push.sql.
+model UserDevice {
+  id         Int      @id @default(autoincrement())
+  userId     Int      @map("user_id")
+  fcmToken   String   @unique(map: "user_devices_token_uk") @map("fcm_token")
+  platform   String
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "user_devices_user_idx")
+  @@map("user_devices")
+}
+
+model CustomerIdentity {
+  id             Int      @id @default(autoincrement())
+  customerId     Int      @map("customer_id")
+  provider       String
+  providerUserId String   @map("provider_user_id")
+  providerEmail  String?  @map("provider_email")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer CustomerAccount @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId], map: "customer_identities_uk")
+  @@index([customerId], map: "customer_identities_cust_idx")
+  @@map("customer_identities")
+}
+
+model CustomerOtp {
+  id         Int       @id @default(autoincrement())
+  email      String    @db.Citext
+  codeHash   String    @map("code_hash")
+  purpose    String
+  attempts   Int       @default(0)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([email, purpose, createdAt(sort: Desc)], map: "customer_otps_email_idx")
+  @@map("customer_otps")
+}
+
+/// Refresh token của NHÂN VIÊN. Chỉ lưu SHA-256 của token, không bao giờ lưu
+/// chuỗi thô — rò DB mà có token thô thì kẻ đọc được mạo danh mọi phiên đang mở.
+///
+/// Tách hẳn với bảng của khách (CustomerRefreshToken) thay vì một bảng chung có
+/// hai cột khoá ngoại nullable: users.id và customer_accounts.id là hai không
+/// gian id khác nhau, gộp lại thì DB không ép được "đúng một trong hai" và mọi
+/// truy vấn phải tự nhớ lọc đúng loại chủ thể. Xem db/migrations/017.
+model RefreshToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  /// SHA-256 hex của token. UNIQUE vì mọi lần refresh đều tra theo đúng cột này.
+  tokenHash String    @unique(map: "refresh_tokens_hash_uk") @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  /// Khác null = đã thu hồi (xoay vòng, logout, hoặc cắt sạch vì nghi bị trộm).
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "refresh_tokens_user_idx")
+  @@map("refresh_tokens")
+}
+
+/// Refresh token của KHÁCH HÀNG. Cùng hình dạng với RefreshToken nhưng khoá
+/// ngoại trỏ customer_accounts — lý do tách bảng xem chú thích ở RefreshToken.
+model CustomerRefreshToken {
+  id         Int       @id @default(autoincrement())
+  customerId Int       @map("customer_id")
+  tokenHash  String    @unique(map: "customer_refresh_tokens_hash_uk") @map("token_hash")
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer CustomerAccount @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId], map: "customer_refresh_tokens_cust_idx")
+  @@map("customer_refresh_tokens")
+}
+
+/// Danh mục địa điểm đầu tuyến — kho, bãi, cảng. Tự khai, không phải 63 tỉnh
+/// thành: hai cái kho trong cùng một tỉnh là hai đầu tuyến khác nhau.
+model Location {
+  id         Int      @id @default(autoincrement())
+  name       String
+  /// Tỉnh/thành, để sau này tra giá cho đơn chỉ khai tỉnh chứ chưa khai kho.
+  province   String?
+  address    String?
+  /// Id dia diem trong master data cua OF1-TMS (051). NULL = chua xin duoc,
+  /// va don di qua dia diem nay KHONG day sang OF1 duoc.
+  of1Id      Int?     @map("of1_id")
+  /// Van phong phu trach (055). Suy ra tu VUNG cua dia chi, khong phai mot
+  /// chieu cua gia: dia chi thuoc vung nao thi van phong vung do bao gia.
+  officeCode String?  @map("office_code")
+  isActive   Boolean  @default(true) @map("is_active")
+  /// Khu vuc cua bang gia tuyen (061). NGUON SU THAT DUY NHAT cua khu vuc:
+  /// khu vuc cua mot tuyen suy ra tu dia diem NHAN, khong luu tren tuyen.
+  regionId   Int?     @map("region_id")
+  createdBy  Int?     @map("created_by")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  creator          User?         @relation(fields: [createdBy], references: [id])
+  region           PriceRegion?  @relation(fields: [regionId], references: [id])
+  routesFrom       RoutePrice[]  @relation("RouteOrigin")
+  routesTo         RoutePrice[]  @relation("RouteDestination")
+  ordersFrom       Order[]       @relation("OrderOrigin")
+  ordersTo         Order[]       @relation("OrderDestination")
+  regionRoutesFrom RegionRoute[] @relation("RegionRouteOrigin")
+  regionRoutesTo   RegionRoute[] @relation("RegionRouteDestination")
+
+  @@map("locations")
+}
+
+/// Một phiên bản của bảng giá. Chỉ MỘT phiên `active`; phiên cũ giữ lại để
+/// tra cứu "hồi tháng 6 báo khách bao nhiêu".
+model PriceSession {
+  id            Int       @id @default(autoincrement())
+  name          String
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  /// draft | active | archived
+  status        String    @default("draft")
+  note          String?
+  createdBy     Int?      @map("created_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  activatedBy   Int?      @map("activated_by")
+  activatedAt   DateTime? @map("activated_at") @db.Timestamptz(6)
+
+  creator      User?         @relation("PriceSessionCreatedBy", fields: [createdBy], references: [id])
+  activator    User?         @relation("PriceSessionActivatedBy", fields: [activatedBy], references: [id])
+  prices       RoutePrice[]
+  regionRoutes RegionRoute[]
+
+  @@map("price_sessions")
+}
+
+/// Don vi tinh gia: loai container, tai trong xe, CBM, pallet...
+///
+/// `kind` theo luat Bee: loai nao la DC thi FCL, loai nao tinh theo tan thi
+/// LCL. Hang khong (tu san bay ve) cung LCL - do la van chuyen duong bo mot
+/// dau o san bay, khong phai dich vu hang khong.
+///
+/// Them mot loai xe moi la them MOT DONG, khong phai mot migration.
+model PriceUnit {
+  code      String   @id
+  label     String
+  /// FCL | LCL
+  kind      String
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  prices       RoutePrice[]
+  regionPrices RegionRoutePrice[]
+
+  @@map("price_units")
+}
+
+/// Giá một tuyến theo MỘT ĐƠN VỊ TÍNH, trong một phiên giá.
+///
+/// Mot tuyen co 6-11 muc gia tuy loai xe. Truoc 055 bang nay chi giu duoc mot
+/// con so cho ca tuyen, nen nhap bang gia that vao la mat 7/8 so lieu.
+///
+/// KHONG theo dich vu (059): cuoc van chuyen mot chang la tien cua chang duong
+/// va loai xe, no khong doi vi don duoc xep vao dich vu nao. Trung cap dia diem
+/// la hien gia.
+model RoutePrice {
+  id            Int      @id @default(autoincrement())
+  sessionId     Int      @map("session_id")
+  originId      Int      @map("origin_id")
+  destinationId Int      @map("destination_id")
+  unitCode      String   @map("unit_code")
+  price         Decimal  @db.Decimal(15, 0)
+  note          String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  session     PriceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  origin      Location     @relation("RouteOrigin", fields: [originId], references: [id])
+  destination Location     @relation("RouteDestination", fields: [destinationId], references: [id])
+  unit        PriceUnit    @relation(fields: [unitCode], references: [code])
+
+  @@unique([sessionId, originId, destinationId, unitCode], map: "route_prices_uk")
+  @@index([sessionId], map: "route_prices_session_idx")
+  @@map("route_prices")
+}
+
+/// Ma tran phan quyen theo TRANG menu (migration 032). Ba muc: none/view/full.
+/// Khong co "phong minh": pham vi du lieu tinh tu phong ban cua tung nguoi.
+model RolePagePermission {
+  role      String
+  pageKey   String   @map("page_key")
+  level     String
+  updatedBy Int?     @map("updated_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  editor User? @relation("RolePagePermissionEditor", fields: [updatedBy], references: [id])
+
+  @@id([role, pageKey])
+  @@map("role_page_permissions")
+}
+
+/// Cau hinh sua duoc tu man quan tri. Mot khoa, mot gia tri.
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedBy Int?     @map("updated_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  editor User? @relation("AppSettingEditor", fields: [updatedBy], references: [id])
+
+  @@map("app_settings")
+}
+
+/// Mot dieu cua dieu khoan ky (migration 053). Luc gui khach ky, cac dieu dang
+/// bat duoc ghep lai theo sortOrder thanh mot van ban.
+model TermsClause {
+  id        Int      @id @default(autoincrement())
+  title     String
+  body      String
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  updatedBy Int?     @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  editor User? @relation(fields: [updatedBy], references: [id])
+
+  @@index([sortOrder, id], map: "terms_clauses_thu_tu_idx")
+  @@map("terms_clauses")
+}
+
+/// Mot khu vuc cua bang gia tuyen (061) - Bac, Trung, Nam... admin tu them bot.
+///
+/// Khu vuc gan vao DIA DIEM chu khong gan vao tuyen: khu vuc cua mot tuyen la
+/// khu vuc cua dia diem nhan. Luu o ca hai cho la hai nguon su that lech nhau
+/// duoc, va man "Dia diem" voi man "Khu vuc va tuyen" se noi hai dieu khac
+/// nhau ve cung mot kho.
+model PriceRegion {
+  id        Int      @id @default(autoincrement())
+  name      String
+  /// Truong phong phu trach (066). Chi nguoi nay xem duoc bang gia cua khu
+  /// vuc; Quan tri va Giam doc thay het. NULL = chua giao cho ai.
+  managerId Int?     @map("manager_id")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  manager   User?      @relation("PriceRegionManager", fields: [managerId], references: [id])
+  locations Location[]
+
+  @@map("price_regions")
+}
+
+/// Mot tuyen trong bang gia khu vuc: mot CAP dia diem, khong keo theo dich vu.
+///
+/// Khong co session_id - man hinh moi khong co o chon phien giao nao ca. Khi
+/// nao can lich su gia thi them phien o day, dung nhu price_sessions da lam.
+model RegionRoute {
+  id            Int      @id @default(autoincrement())
+  /// Mot phien la mot BAN CHUP day du cua bang gia (063), dung nhu route_prices:
+  /// hai phien co the co cung mot cap dia diem voi gia khac nhau.
+  sessionId     Int      @map("session_id")
+  originId      Int      @map("origin_id")
+  destinationId Int      @map("destination_id")
+  /// Quang duong HAI CHIEU, km (062). Thuoc TUYEN: doan duong khong doi theo
+  /// viec cho hang bang xe 1.4T hay container 20DC.
+  roundTripKm   Int?     @map("round_trip_km")
+  createdBy     Int?     @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  session     PriceSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  origin      Location           @relation("RegionRouteOrigin", fields: [originId], references: [id])
+  destination Location           @relation("RegionRouteDestination", fields: [destinationId], references: [id])
+  creator     User?              @relation(fields: [createdBy], references: [id])
+  prices      RegionRoutePrice[]
+
+  @@unique([sessionId, originId, destinationId], map: "region_routes_uk")
+  @@index([destinationId], map: "region_routes_dest_idx")
+  @@index([sessionId], map: "region_routes_session_idx")
+  @@map("region_routes")
+}
+
+/// Mot muc gia: tuyen + dich vu con + bac trong tai -> gia mot chieu / hai chieu.
+///
+/// Gop ca "khoi dich vu" vao day thay vi mot bang trung gian: khoi dich vu tren
+/// giao dien khong co thuoc tinh nao ngoai chinh cai id, nen mot bang chi de giu
+/// id la mot phep join khong mua duoc gi. API gom theo serviceChildId luc tra ve.
+model RegionRoutePrice {
+  id             Int      @id @default(autoincrement())
+  routeId        Int      @map("route_id")
+  /// FCL = nguyen container, LCL = hang le (065). Bang gia that chia dung hai
+  /// khoi nay: mot tuyen cho mot cai 20DC thi gia nhu nhau, bat ke don duoc
+  /// xep vao dich vu con nao.
+  kind           String
+  /// Don vi tinh (062): dung chung danh muc price_units voi bang gia cu, vi
+  /// bang gia that co ca bac tai theo tan lan loai container (20DC, 40DC).
+  unitCode       String   @map("unit_code")
+  /// Hai gia deu cho phep NULL nhung KHONG duoc cung NULL (rang buoc cua DB):
+  /// tuyen chi chay mot chieu la that, con mot dong khong co gia nao thi khong
+  /// phai mot muc gia.
+  oneWayPrice    Decimal? @map("one_way_price") @db.Decimal(15, 0)
+  roundTripPrice Decimal? @map("round_trip_price") @db.Decimal(15, 0)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  route RegionRoute @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  unit  PriceUnit   @relation(fields: [unitCode], references: [code])
+
+  @@unique([routeId, kind, unitCode], map: "region_route_prices_uk")
+  @@map("region_route_prices")
+}
+
+/// Logo hai dai doi tac tren trang chu landing (073). Quan ly o CMS.
+model PartnerLogo {
+  id        Int      @id @default(autoincrement())
+  /// 'customer' | 'membership'
+  groupKey  String   @map("group_key") @db.VarChar(20)
+  name      String
+  /// '/img/logos/...' (co san trong landing) hoac URL S3 (tai len tu CMS).
+  imageUrl  String   @map("image_url")
+  /// Rong/cao cua phan noi dung logo — landing chia kich thuoc theo dien tich.
+  ratio     Decimal  @db.Decimal(6, 3)
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([groupKey, sortOrder, id], map: "partner_logos_group_idx")
+  @@map("partner_logos")
+}
